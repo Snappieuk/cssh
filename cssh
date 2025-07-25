@@ -1,0 +1,21 @@
+#!/bin/bash
+
+if [ -z "$1" ]; then
+    echo "Usage: $0 [command]"
+    exit 1
+fi
+
+local_node=$(hostname)
+
+# Get the list of nodes correctly
+nodes=$(pvecm nodes | awk 'NR>3 {print $3}' | sed 's/(local)//' | grep -v '^Name$' | xargs)
+
+for node in $nodes; do
+    if [[ -z "$node" ]]; then
+        continue
+    fi
+
+    echo "-- $node ----------------------------------------"
+    
+    ssh -T root@"$node" -- "$@"
+done
