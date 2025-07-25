@@ -1,21 +1,42 @@
 #!/bin/bash
 
+SCRIPT_NAME="cssh"
+TARGET_PATH="/bin/$SCRIPT_NAME"
+
+# Get the list of nodes
+nodes=$(pvecm nodes | awk 'NR>3 {print $3}' | sed 's/(local)//' | grep -v '^Name$' | xargs)
+local_node=$(hostname)
+
+# Handle --deploy flag
+if [[ "$1" == "--deploy" ]]; then
+    echo "Deploying $SCRIPT_NAME to all nodes..."
+
+    for node in $nodes; do
+        if [[ "$node" == "$local_node" || -z "$node" ]]; then
+            continue
+        fi
+
+        echo "-- Deploying to $node ----------------------------------------"
+        scp "$0" root@"$node":/tmp/$SCRIPT_NAME
+        ssh root@"$node" "mv /tmp/$SCRIPT_NAME $TARGET_PATH && chmod +x $TARGET_PATH"
+    done
+
+    echo "Deployment complete."
+    exit 0
+fi
+
+# Check for command argument
 if [ -z "$1" ]; then
-    echo "Usage: $0 [command]"
+    echo "Usage: $0 [--deploy] [command]"
     exit 1
 fi
 
-local_node=$(hostname)
-
-# Get the list of nodes correctly
-nodes=$(pvecm nodes | awk 'NR>3 {print $3}' | sed 's/(local)//' | grep -v '^Name$' | xargs)
-
+# Run command on all nodes
 for node in $nodes; do
     if [[ -z "$node" ]]; then
         continue
     fi
 
     echo "-- $node ----------------------------------------"
-    
     ssh -T root@"$node" -- "$@"
 done
