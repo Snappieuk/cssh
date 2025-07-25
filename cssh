@@ -25,13 +25,35 @@ if [[ "$1" == "--deploy" ]]; then
     exit 0
 fi
 
-# Check for command argument
+# Handle --parallel flag
+if [[ "$1" == "--parallel" ]]; then
+    shift
+    if [ -z "$1" ]; then
+        echo "Usage: $0 --parallel [command]"
+        exit 1
+    fi
+
+    echo "Running command in parallel across nodes..."
+    for node in $nodes; do
+        if [[ -z "$node" ]]; then
+            continue
+        fi
+
+        echo "-- $node ----------------------------------------"
+        ssh -T root@"$node" -- "$@" &
+    done
+
+    wait
+    echo "Parallel execution complete."
+    exit 0
+fi
+
+# Default: sequential execution
 if [ -z "$1" ]; then
-    echo "Usage: $0 [--deploy] [command]"
+    echo "Usage: $0 [--deploy] [--parallel] [command]"
     exit 1
 fi
 
-# Run command on all nodes
 for node in $nodes; do
     if [[ -z "$node" ]]; then
         continue
