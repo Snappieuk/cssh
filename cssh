@@ -21,36 +21,51 @@ get_nodes() {
     in && /^-+/ {next}                     # skip underline
     in && /^[[:space:]]*Nodeid/ {next}     # skip header row
     in && /^[[:space:]]*0x[0-9a-fA-F]+/ {
-      # example line: "0x00000001          1 10.220.12.6 (local)"
       gsub(/\(local\)/, "", $0)
       print $3
     }
   '
 }
 
-# Fallback to corosync.conf ring0_addr if needed (kept simple)
+# Fallback to corosync.conf ring0_addr if needed
 get_nodes_fallback() {
   [ -r /etc/pve/corosync.conf ] || return 0
   awk -F: '/ring0_addr:/ {gsub(/[[:space:]]/, "", $2); print $2}' /etc/pve/corosync.conf
 }
 
-# Build node list (unique, trimmed)
 nodes_raw="$(get_nodes)"
 if [ -z "$nodes_raw" ]; then
   nodes_raw="$(get_nodes_fallback)"
 fi
 nodes="$(printf '%s\n' $nodes_raw | awk 'NF' | sort -u | xargs)"
-
-# Local node primary IP (for deploy-skip)
 local_node="$(hostname -I 2>/dev/null | awk '{print $1}')"
 
-# -------- helpers --------
 usage() {
-  echo "Usage: $0 [--list] [--debug] [--deploy] [--parallel] [command]"
+  echo "Usage: $0 [--list] [--debug] [--deploy] [--parallel] [--] [command]"
 }
 
-# --list: show discovered nodes (one per line)
-if [[ "$1" == "--list" ]]; then
+# -------- parse our own flags and separate remote command --------
+PARALLEL=0
+DEPLOY=0
+LIST=0
+DEBUGF=0
+REMOTE_CMD=()
+
+while (( "$#" )); do
+  case "$1" in
+    --parallel) PARALLEL=1; shift ;;
+    --deploy)   DEPLOY=1; shift ;;
+    --list)     LIST=1; shift ;;
+    --debug)    DEBUGF=1; shift ;;
+    --)         shift; REMOTE_CMD=("$@"); break ;;
+    --*)        # unknown flag (treat as part of remote cmd)
+                REMOTE_CMD+=("$1"); shift ;;
+    *)          REMOTE_CMD+=("$1"); shift ;;
+  esac
+done
+
+# -------- handlers --------
+if [[ $LIST -eq 1 ]]; then
   if [[ -z "$nodes" ]]; then
     echo "No nodes discovered."
     exit 1
@@ -59,8 +74,7 @@ if [[ "$1" == "--list" ]]; then
   exit 0
 fi
 
-# --debug: print raw status + parsed nodes, then exit
-if [[ "$1" == "--debug" ]]; then
+if [[ $DEBUGF -eq 1 ]]; then
   echo "=== pvecm status ==="
   pvecm status || true
   echo
@@ -73,8 +87,7 @@ if [[ "$1" == "--debug" ]]; then
   exit 0
 fi
 
-# --deploy: copy this script to peers and install
-if [[ "$1" == "--deploy" ]]; then
+if [[ $DEPLOY -eq 1 ]]; then
   if [[ -z "$nodes" ]]; then
     echo "No nodes discovered. Aborting."
     exit 1
@@ -92,22 +105,24 @@ if [[ "$1" == "--deploy" ]]; then
   exit 0
 fi
 
-# --parallel: run command on all nodes concurrently
-if [[ "$1" == "--parallel" ]]; then
-  shift
-  if [[ -z "$1" ]]; then
-    echo "Usage: $0 --parallel [command]"
-    exit 1
-  fi
-  if [[ -z "$nodes" ]]; then
-    echo "No nodes discovered. Aborting."
-    exit 1
-  fi
+# Need nodes for any run
+if [[ -z "$nodes" ]]; then
+  echo "No nodes discovered. Aborting."
+  exit 1
+fi
+
+# No remote command provided?
+if [[ ${#REMOTE_CMD[@]} -eq 0 ]]; then
+  usage
+  exit 1
+fi
+
+if [[ $PARALLEL -eq 1 ]]; then
   echo "Running command in parallel across nodes..."
   for node in $nodes; do
     [[ -z "$node" ]] && continue
     echo "-- $node ----------------------------------------"
-    ssh -T root@"$node" -- "$@" &
+    ssh -T root@"$node" -- "${REMOTE_CMD[@]}" &
   done
   wait
   echo "Parallel execution complete."
@@ -115,18 +130,8 @@ if [[ "$1" == "--parallel" ]]; then
 fi
 
 # Default: sequential execution
-if [[ -z "$1" ]]; then
-  usage
-  exit 1
-fi
-
-if [[ -z "$nodes" ]]; then
-  echo "No nodes discovered. Aborting."
-  exit 1
-fi
-
 for node in $nodes; do
   [[ -z "$node" ]] && continue
   echo "-- $node ----------------------------------------"
-  ssh -T root@"$node" -- "$@"
+  ssh -T root@"$node" -- "${REMOTE_CMD[@]}"
 done
