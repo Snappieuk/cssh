@@ -3,9 +3,9 @@
 SCRIPT_NAME="cssh"
 TARGET_PATH="/bin/$SCRIPT_NAME"
 
-# Get the list of nodes
-nodes=$(pvecm nodes | awk 'NR>3 {print $3}' | sed 's/(local)//' | grep -v '^Name$' | xargs)
-local_node=$(hostname)
+# Get the list of node IPs from pvecm status (ring0 addresses)
+nodes=$(pvecm status | awk '/ring0/ {print $2}')
+local_node=$(hostname -I | awk '{print $1}') # local IP for exclusion
 
 # Handle --deploy flag
 if [[ "$1" == "--deploy" ]]; then
