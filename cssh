@@ -1,64 +1,63 @@
 #!/bin/bash
+# cssh — Proxmox cluster SSH helper (IPs from pvecm/corosync)
+
+# Optional but helpful:
+# set -euo pipefail
 
 SCRIPT_NAME="cssh"
-TARGET_PATH="/bin/$SCRIPT_NAME"
+TARGET_PATH="/usr/local/bin/$SCRIPT_NAME"
 
-# Get the list of node IPs from pvecm status (ring0 addresses)
-nodes=$(pvecm status | awk '/ring0/ {print $2}')
-local_node=$(hostname -I | awk '{print $1}') # local IP for exclusion
+get_node_ips() {
+  local ips
 
-# Handle --deploy flag
-if [[ "$1" == "--deploy" ]]; then
-    echo "Deploying $SCRIPT_NAME to all nodes..."
+  # 1) pvecm status table with Nodeaddr column
+  ips=$(pvecm status 2>/dev/null | awk '
+    /^Nodeid[[:space:]]+Name[[:space:]]+Nodeaddr/ {hdr=1; next}
+    hdr && NF {print $3}
+    hdr && !NF {exit}
+  ' | sed 's/(local)//g' | awk 'NF' | sort -u)
 
-    for node in $nodes; do
-        if [[ "$node" == "$local_node" || -z "$node" ]]; then
-            continue
-        fi
+  # 2) knet lines: "... addr: 192.168.1.x"
+  if [[ -z "$ips" ]]; then
+    ips=$(pvecm status 2>/dev/null \
+      | awk '/addr:[[:space:]]*[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ {gsub(/,/, "", $NF); print $NF}' \
+      | sort -u)
+  fi
 
-        echo "-- Deploying to $node ----------------------------------------"
-        scp "$0" root@"$node":/tmp/$SCRIPT_NAME
-        ssh root@"$node" "mv /tmp/$SCRIPT_NAME $TARGET_PATH && chmod +x $TARGET_PATH"
-    done
+  # 3) fallback to corosync.conf ring0_addr (robust across versions)
+  if [[ -z "$ips" && -r /etc/pve/corosync.conf ]]; then
+    ips=$(awk -F': *' '/ring0_addr:/ {gsub(/[[:space:]]/, "", $2); print $2}' /etc/pve/corosync.conf \
+      | sort -u)
+  fi
 
-    echo "Deployment complete."
-    exit 0
-fi
+  echo "$ips"
+}
 
-# Handle --parallel flag
-if [[ "$1" == "--parallel" ]]; then
-    shift
-    if [ -z "$1" ]; then
-        echo "Usage: $0 --parallel [command]"
-        exit 1
-    fi
+NODES="$(get_node_ips)"
+LOCAL_IPS=" $(hostname -I 2>/dev/null) "
 
-    echo "Running command in parallel across nodes..."
-    for node in $nodes; do
-        if [[ -z "$node" ]]; then
-            continue
-        fi
-
-        echo "-- $node ----------------------------------------"
-        ssh -T root@"$node" -- "$@" &
-    done
-
-    wait
-    echo "Parallel execution complete."
-    exit 0
-fi
-
-# Default: sequential execution
-if [ -z "$1" ]; then
-    echo "Usage: $0 [--deploy] [--parallel] [command]"
+# --list: show what we found
+if [[ "${1:-}" == "--list" ]]; then
+  if [[ -z "$NODES" ]]; then
+    echo "No nodes found. Try running as root or check 'pvecm status' output."
     exit 1
+  fi
+  echo "$NODES"
+  exit 0
 fi
 
-for node in $nodes; do
-    if [[ -z "$node" ]]; then
-        continue
-    fi
+# --deploy: copy this script to all peers
+if [[ "${1:-}" == "--deploy" ]]; then
+  if [[ -z "$NODES" ]]; then
+    echo "No nodes discovered. Aborting."
+    exit 1
+  fi
 
-    echo "-- $node ----------------------------------------"
-    ssh -T root@"$node" -- "$@"
-done
+  echo "Deploying $SCRIPT_NAME to all nodes..."
+  for node in $NODES; do
+    if [[ " $LOCAL_IPS " == *" $node "* || -z "$node" ]]; then
+      continue
+    fi
+    echo "-- Deploying to $node ----------------------------------------"
+    scp "$0" root@"$node":/tmp/$SCRIPT_NAME
+    ssh root@"$node" "mv /tmp/$SCRIPT
