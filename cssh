@@ -3,12 +3,10 @@
 SCRIPT_NAME="cssh"
 TARGET_PATH="/bin/$SCRIPT_NAME"
 
-# NEW: resolve the absolute path to this script for scp
-# (so scp doesn't try to copy a non-existent ./cssh)
+# NEW (previous step): resolve the absolute path to this script for scp
 if command -v readlink >/dev/null 2>&1; then
     SCRIPT_SRC="$(readlink -f "${BASH_SOURCE[0]}")"
 else
-    # Fallback if readlink -f isn't available
     case "${BASH_SOURCE[0]}" in
         /*) SCRIPT_SRC="${BASH_SOURCE[0]}" ;;
         *)  SCRIPT_SRC="$PWD/${BASH_SOURCE[0]}" ;;
@@ -18,6 +16,19 @@ fi
 # Get the list of node IPs from pvecm status (Membership information)
 nodes=$(pvecm status 2>/dev/null | awk '/^Membership information/{flag=1; next} flag && /^[[:space:]]*0x[0-9a-fA-F]+/ {print $3}' | sed 's/(local)//' | xargs)
 local_node=$(hostname -I 2>/dev/null | awk '{print $1}')
+
+# NEW: --list shows discovered nodes (for debugging/verification)
+if [[ "$1" == "--list" ]]; then
+    if [[ -z "$nodes" ]]; then
+        echo "No nodes discovered (check 'pvecm status' output)."
+        exit 1
+    fi
+    # Print one per line
+    for node in $nodes; do
+        echo "$node"
+    done
+    exit 0
+fi
 
 # Handle --deploy flag
 if [[ "$1" == "--deploy" ]]; then
@@ -29,7 +40,6 @@ if [[ "$1" == "--deploy" ]]; then
         fi
 
         echo "-- Deploying to $node ----------------------------------------"
-        # Use resolved SCRIPT_SRC instead of $0
         scp "$SCRIPT_SRC" root@"$node":/tmp/$SCRIPT_NAME
         ssh root@"$node" "mv /tmp/$SCRIPT_NAME $TARGET_PATH && chmod +x $TARGET_PATH"
     done
@@ -63,7 +73,7 @@ fi
 
 # Default: sequential execution
 if [ -z "$1" ]; then
-    echo "Usage: $0 [--deploy] [--parallel] [command]"
+    echo "Usage: $0 [--list] [--deploy] [--parallel] [command]"
     exit 1
 fi
 
@@ -74,4 +84,4 @@ for node in $nodes; do
 
     echo "-- $node ----------------------------------------"
     ssh -T root@"$node" -- "$@"
-done
+do
