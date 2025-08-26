@@ -17,10 +17,10 @@ fi
 get_nodes() {
   # Parse IPs from the "Membership information" section
   pvecm status 2>/dev/null | awk '
-    /^Membership information/ {in=1; next}
-    in && /^-+/ {next}                     # skip underline
-    in && /^[[:space:]]*Nodeid/ {next}     # skip header row
-    in && /^[[:space:]]*0x[0-9a-fA-F]+/ {
+    /^Membership information/ {memb=1; next}
+    memb && /^-+/ {next}                     # skip underline
+    memb && /^[[:space:]]*Nodeid/ {next}     # skip header row
+    memb && /^[[:space:]]*0x[0-9a-fA-F]+/ {
       gsub(/\(local\)/, "", $0)
       print $3
     }
@@ -58,8 +58,7 @@ while (( "$#" )); do
     --list)     LIST=1; shift ;;
     --debug)    DEBUGF=1; shift ;;
     --)         shift; REMOTE_CMD=("$@"); break ;;
-    --*)        # unknown flag (treat as part of remote cmd)
-                REMOTE_CMD+=("$1"); shift ;;
+    --*)        REMOTE_CMD+=("$1"); shift ;; # unknown flag → treat as remote cmd
     *)          REMOTE_CMD+=("$1"); shift ;;
   esac
 done
