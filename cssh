@@ -3,7 +3,7 @@
 SCRIPT_NAME="cssh"
 TARGET_PATH="/bin/$SCRIPT_NAME"
 
-# NEW (previous step): resolve the absolute path to this script for scp
+# Resolve absolute path of this script (so --deploy copies the real file)
 if command -v readlink >/dev/null 2>&1; then
     SCRIPT_SRC="$(readlink -f "${BASH_SOURCE[0]}")"
 else
@@ -13,75 +13,120 @@ else
     esac
 fi
 
-# Get the list of node IPs from pvecm status (Membership information)
-nodes=$(pvecm status 2>/dev/null | awk '/^Membership information/{flag=1; next} flag && /^[[:space:]]*0x[0-9a-fA-F]+/ {print $3}' | sed 's/(local)//' | xargs)
-local_node=$(hostname -I 2>/dev/null | awk '{print $1}')
+# -------- node discovery (method 2) --------
+get_nodes() {
+  # Parse IPs from the "Membership information" section
+  pvecm status 2>/dev/null | awk '
+    /^Membership information/ {in=1; next}
+    in && /^-+/ {next}                     # skip underline
+    in && /^[[:space:]]*Nodeid/ {next}     # skip header row
+    in && /^[[:space:]]*0x[0-9a-fA-F]+/ {
+      # example line: "0x00000001          1 10.220.12.6 (local)"
+      gsub(/\(local\)/, "", $0)
+      print $3
+    }
+  '
+}
 
-# NEW: --list shows discovered nodes (for debugging/verification)
+# Fallback to corosync.conf ring0_addr if needed (kept simple)
+get_nodes_fallback() {
+  [ -r /etc/pve/corosync.conf ] || return 0
+  awk -F: '/ring0_addr:/ {gsub(/[[:space:]]/, "", $2); print $2}' /etc/pve/corosync.conf
+}
+
+# Build node list (unique, trimmed)
+nodes_raw="$(get_nodes)"
+if [ -z "$nodes_raw" ]; then
+  nodes_raw="$(get_nodes_fallback)"
+fi
+nodes="$(printf '%s\n' $nodes_raw | awk 'NF' | sort -u | xargs)"
+
+# Local node primary IP (for deploy-skip)
+local_node="$(hostname -I 2>/dev/null | awk '{print $1}')"
+
+# -------- helpers --------
+usage() {
+  echo "Usage: $0 [--list] [--debug] [--deploy] [--parallel] [command]"
+}
+
+# --list: show discovered nodes (one per line)
 if [[ "$1" == "--list" ]]; then
-    if [[ -z "$nodes" ]]; then
-        echo "No nodes discovered (check 'pvecm status' output)."
-        exit 1
-    fi
-    # Print one per line
-    for node in $nodes; do
-        echo "$node"
-    done
-    exit 0
+  if [[ -z "$nodes" ]]; then
+    echo "No nodes discovered."
+    exit 1
+  fi
+  for n in $nodes; do echo "$n"; done
+  exit 0
 fi
 
-# Handle --deploy flag
+# --debug: print raw status + parsed nodes, then exit
+if [[ "$1" == "--debug" ]]; then
+  echo "=== pvecm status ==="
+  pvecm status || true
+  echo
+  echo "=== parsed nodes ==="
+  if [[ -z "$nodes" ]]; then
+    echo "(none)"
+    exit 1
+  fi
+  for n in $nodes; do echo "$n"; done
+  exit 0
+fi
+
+# --deploy: copy this script to peers and install
 if [[ "$1" == "--deploy" ]]; then
-    echo "Deploying $SCRIPT_NAME to all nodes..."
-
-    for node in $nodes; do
-        if [[ "$node" == "$local_node" || -z "$node" ]]; then
-            continue
-        fi
-
-        echo "-- Deploying to $node ----------------------------------------"
-        scp "$SCRIPT_SRC" root@"$node":/tmp/$SCRIPT_NAME
-        ssh root@"$node" "mv /tmp/$SCRIPT_NAME $TARGET_PATH && chmod +x $TARGET_PATH"
-    done
-
-    echo "Deployment complete."
-    exit 0
+  if [[ -z "$nodes" ]]; then
+    echo "No nodes discovered. Aborting."
+    exit 1
+  fi
+  echo "Deploying $SCRIPT_NAME to all nodes..."
+  for node in $nodes; do
+    if [[ -z "$node" || "$node" == "$local_node" ]]; then
+      continue
+    fi
+    echo "-- Deploying to $node ----------------------------------------"
+    scp "$SCRIPT_SRC" root@"$node":/tmp/$SCRIPT_NAME
+    ssh root@"$node" "mv /tmp/$SCRIPT_NAME $TARGET_PATH && chmod +x $TARGET_PATH"
+  done
+  echo "Deployment complete."
+  exit 0
 fi
 
-# Handle --parallel flag
+# --parallel: run command on all nodes concurrently
 if [[ "$1" == "--parallel" ]]; then
-    shift
-    if [ -z "$1" ]; then
-        echo "Usage: $0 --parallel [command]"
-        exit 1
-    fi
-
-    echo "Running command in parallel across nodes..."
-    for node in $nodes; do
-        if [[ -z "$node" ]]; then
-            continue
-        fi
-
-        echo "-- $node ----------------------------------------"
-        ssh -T root@"$node" -- "$@" &
-    done
-
-    wait
-    echo "Parallel execution complete."
-    exit 0
+  shift
+  if [[ -z "$1" ]]; then
+    echo "Usage: $0 --parallel [command]"
+    exit 1
+  fi
+  if [[ -z "$nodes" ]]; then
+    echo "No nodes discovered. Aborting."
+    exit 1
+  fi
+  echo "Running command in parallel across nodes..."
+  for node in $nodes; do
+    [[ -z "$node" ]] && continue
+    echo "-- $node ----------------------------------------"
+    ssh -T root@"$node" -- "$@" &
+  done
+  wait
+  echo "Parallel execution complete."
+  exit 0
 fi
 
 # Default: sequential execution
-if [ -z "$1" ]; then
-    echo "Usage: $0 [--list] [--deploy] [--parallel] [command]"
-    exit 1
+if [[ -z "$1" ]]; then
+  usage
+  exit 1
+fi
+
+if [[ -z "$nodes" ]]; then
+  echo "No nodes discovered. Aborting."
+  exit 1
 fi
 
 for node in $nodes; do
-    if [[ -z "$node" ]]; then
-        continue
-    fi
-
-    echo "-- $node ----------------------------------------"
-    ssh -T root@"$node" -- "$@"
-do
+  [[ -z "$node" ]] && continue
+  echo "-- $node ----------------------------------------"
+  ssh -T root@"$node" -- "$@"
+done
